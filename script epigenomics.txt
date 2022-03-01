@@ -1,0 +1,138 @@
+sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
+
+##################################################
+#Task 1: Create a folder regulatory_elements inside epigenomics_uvic. This will be the folder where you store all your subsequent results.
+#-------------------------------------------------
+
+mkdir regulatory_elements
+
+
+##################################################
+#Task 2: Distal regulatory regions are usually found to be flanked by both H3K27ac and H3K4me1. From your starting catalogue of open regions in each tissue, select those that overlap peaks of H3K27ac AND H3K4me1 in the corresponding tissue. You will get a list of candidate distal regulatory elements for each tissue. How many are they?
+#-------------------------------------------------
+
+#download metadata
+bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_title=Histone+ChIP-seq&target.label=H3K27ac&target.label=H3K4me1&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&type=Experiment"
+
+
+#acces to column names and number
+head -1 metadata.tsv | awk 'BEGIN{FS=OFS="\t"}{for (i=1;i<=NF;i++){print $i, i}}'
+
+#check the target and tissue of each sample
+grep -F "v1.5.1_GRCh38" metadata.tsv |\
+grep -F "bigBed_narrowPeak"|\
+grep -F "pseudoreplicated" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1,$11,$23}'
+
+#ENCFF372FFI     stomach 	 H3K4me1-human
+#ENCFF724ZOF     sigmoid_colon   H3K4me1-human
+#ENCFF977LBD     stomach 	 H3K27ac-human
+#ENCFF872UHN     sigmoid_colon   H3K27ac-human
+
+mkdir data
+
+#download bigBeds in data file
+grep -F "v1.5.1_GRCh38" metadata.tsv |\
+grep -F "bigBed_narrowPeak"|\
+grep -F "pseudoreplicated" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1}'|\
+while read filename;\
+do wget -P data "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed";\
+done
+
+cd data
+
+#uncompress bigBeds
+for big in ENC*;
+do bigBedToBed $big $big.bed; done
+
+cd ../regulatory_elements
+
+#obtain overlapped histone marks on each tissue
+bedtools intersect -a ../data/ENCFF372FFI.bigBed.bed -b ../data/ENCFF977LBD.bigBed.bed > stomach.histones.bed
+bedtools intersect -a ../data/ENCFF724ZOF.bigBed.bed -b ../data/ENCFF872UHN.bigBed.bed > sigmoid.histones.bed
+
+#obtain overlapped histones marks overlapped with open regions
+for tissue in stomach sigmoid;\
+do bedtools intersect -a ../ATAC-seq/$tissue.out.peaks.bed -b $tissue.histones.bed > $tissue.distalreg.bed ;done
+
+#how many possible distal regions are there?
+for tissue in stomach sigmoid;\
+do cat $tissue.distalreg.bed |wc -l;done
+
+#9525 stomach
+#16492 sigmoid_colon
+
+##################################################
+#Task 3: Focus on regulatory elements that are located on chromosome 1 (hint: to parse a file based on the value of a specific column, have a look at what we did here), and generate a file regulatory.elements.starts.tsv that contains the name of the regulatory region (i.e. the name of the original ATAC-seq peak) and the start (5') coordinate of the region.
+#-------------------------------------------------
+for tissue in stomach sigmoid;\
+do grep -F "chr1" $tissue.distalreg.bed|\
+awk 'BEGIN{FS=OFS="\t"}{print $2,$4}'\
+> $tissue.regulatory.elements.starts.tsv;done
+
+
+##################################################
+#Task 4: Focus on protein-coding genes located on chromosome 1. From the BED file of gene body coordinates that you generated here, prepare a tab-separated file called gene.starts.tsv which will store the name of the gene in the first column, and the start coordinate of the gene on the second column (REMEMBER: for genes located on the minus strand, the start coordinate will be at the 3'). Use the command below as a starting point:
+#-------------------------------------------------
+cd ../ATAC-seq/annotation
+
+cat gencode.v24.protein.coding.gene.body.bed|\
+awk 'BEGIN{FS=OFS="\t"}{if ($6=="+"){start=$2} else {start=$3}; print $4, start}'\
+>gene.starts.tsv
+
+cd ..
+cd ..
+cd bin
+nano #copy of the script with name get.distance.py
+
+
+##################################################
+#Task 5: Download or copy this python script inside the epigenomics_uvic/bin folder. Have a look at the help page of this script to understand how it works:
+#-------------------------------------------------
+cd ..
+python bin/get.distance.py --input ATAC-seq/annotation/gene.starts.tsv --start 980000
+
+
+##################################################
+Task 6. For each regulatory element contained in the file regulatory.elements.starts.tsv, retrieve the closest gene and the distance to the closest gene using the python script you created above. Use the command below as a starting point:
+#-------------------------------------------------
+cd regulatory_elements
+
+#create a document with only the first column
+for tissue in stomach sigmoid;
+do for line in $tissue.regulatory.elements.starts.tsv; 
+do cut -f1 $line > $tissue.regulatory.elements.starts.position.tsv;done;done
+
+#execture get.distance.py on the obtained regulatory elements
+for tissue in stomach sigmoid;do cat $tissue.regulatory.elements.starts.position.tsv | while read start;do python ../bin/get.distance.py --input ../ATAC-seq/annotation/gene.starts.tsv --start $start>> $tissue.regulatoryElements.genes.distances.tsv; done; done
+
+##################################################
+Task 7: Use R to compute the mean and the median of the distances stored in regulatoryElements.genes.distances.tsv
+#-------------------------------------------------
+R
+sigmoid <- read.delim("sigmoid.regulatoryElements.genes.distances.tsv")
+
+sigmoid.mean <- paste("mean:",mean(sigmoid[,3]))
+sigmoid.median <- paste("median:",median(sigmoid[,3]))
+sig.res <- c(sigmoid.mean, sigmoid.median)
+
+#mean: 8292.30610173792
+#median: 3267
+
+write.table(sig.res, "sigmoid.regulatoryElements.genes.distances.tsv", quote=F, row.names=F, col.names=F)
+
+stomach<- read.delim("stomach.regulatoryElements.genes.distances.tsv")
+stomach.mean <- paste("mean:",mean(stomach[,3]))
+stomach.median <- paste("median:",median(stomach[,3]))
+stomach.res <- c(stomach.mean, stomach.median)
+
+write.table(stomach.res, "stomach.regulatoryElements.genes.distances.tsv", quote=F, row.names=F, col.names=F)
+
+#mean: 7350.89185277088
+#median: 3442.5
+
+
+
+
+
