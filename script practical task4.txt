@@ -1,0 +1,73 @@
+#start
+sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
+
+
+cd epigenomics_uvic
+mkdir bedfiles peaks_analyses
+
+#download metadata
+../bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_title=ATAC-seq&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&type=Experiment"
+
+#command to see number of the columns
+head -1 metadata.tsv | awk 'BEGIN{FS=OFS="\t"}{for (i=1;i<=NF;i++){print $i, i}}'
+
+#what documents to download from encode
+grep -F ATAC-seq metadata.tsv |grep -F "bigBed_narrowPeak" |grep -F "pseudoreplicated_peaks" |grep -F "GRCh38" |awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |sort -k2,2 -k1,1r |sort -k2,2 -u > bedfiles/bigBed.peaks.ids.txt
+
+
+#download the documents
+cut -f1 bedfiles/bigBed.peaks.ids.txt |\
+while read filename; do
+  wget -P bedfiles "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+# retrieve original MD5 hash from the metadata
+../bin/selectRows.sh <(cut -f1 bedfiles/bigBed.peaks.ids.txt) metadata.tsv | cut -f1,46 > data/bigBed.files/md5sum.txt
+
+# compute MD5 hash on the downloaded files 
+cat data/bigBed.files/md5sum.txt |\
+while read filename original_md5sum; do md5sum data/bigBed.files/"$filename".bigBed |\
+awk -v filename="$filename" -v original_md5sum="$original_md5sum" 'BEGIN{FS=" "; OFS="\t"}{print filename, original_md5sum, $1}';done > tmp 
+
+mv tmp data/bigBed.files/md5sum.txt
+
+# make sure there are no files for which original and computed MD5 hashes differ
+awk '$2!=$3' data/bigBed.files/md5sum.txt
+
+#convert bigBed to bed
+mkdir data/bed.files
+
+cut -f1 bedfiles/bigBed.peaks.ids.txt |\
+while read filename; do
+  bigBedToBed data/bigBed.files/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+#take annotation
+mkdir annotation
+cp ../ChIP-seq/annotation/gencode.v24.protein.coding.gene.body.bed ./annotation
+cp ../ChIP-seq/annotation/gencode.v24.protein.coding.non.redundant.TSS.bed ./annotation
+
+#1) the number of peaks that intersect promoter regions
+cut -f1 bedfiles/bigBed.peaks.ids.txt |\
+while read filename; do bedtools intersect -a data/bed.files/"$filename".bed -b annotation/gencode.v24.protein.coding.non.redundant.TSS.bed -u > "$filename".peaks.intersect.tss.bed; done
+
+cut -f1 bedfiles/bigBed.peaks.ids.txt |\
+while read filename; do cat "$filename".peaks.intersect.tss.bed | wc -l; done
+
+
+
+#2)the number of peaks that fall outside gene coordinates (whole gene body, not just the promoter regions
+cut -f1 bedfiles/bigBed.peaks.ids.txt |\
+while read filename; do bedtools intersect -v -a data/bed.files/"$filename".bed -b annotation/gencode.v24.protein.coding.gene.body.bed> "$filename".peaks.out.gene.bed; done
+
+cut -f1 bedfiles/bigBed.peaks.ids.txt |\
+while read filename; do cat "$filename".peaks.out.gene.bed | wc -l; done
+
+
+
+
+
+
+
+
+
